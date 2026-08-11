@@ -1,29 +1,6 @@
-# ----------------------------------------------------
-# Stage 1: Build & Composer Dependencies
-# ----------------------------------------------------
-FROM composer:2.6 AS vendor
-
-WORKDIR /app
-
-COPY composer.json composer.lock ./
-
-# Install dependencies without dev-packages or running scripts yet
-RUN composer install \
-    --no-dev \
-    --no-interaction \
-    --no-autoloader \
-    --no-scripts
-
-COPY . .
-
-RUN composer dump-autoload --optimize
-
-# ----------------------------------------------------
-# Stage 2: Production Apache/PHP Image
-# ----------------------------------------------------
 FROM php:8.2-apache
 
-# Install required system packages & PHP extensions
+# Install PHP extensions required for database & system operations
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpng-dev \
     libonig-dev \
@@ -31,36 +8,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libzip-dev \
     zip \
     unzip \
-    git \
     curl \
-    && docker-php-ext-install pdo_mysql mbstring exif pcntl bcmath gd zip opcache \
+    && docker-php-ext-install pdo_mysql mysqli mbstring exif pcntl bcmath gd zip opcache \
     && apt-get clean && rm -rf /var/www/html/* /var/lib/apt/lists/*
 
-# Enable Apache mod_rewrite for clean Laravel/Lavalust URLs
+# Enable Apache mod_rewrite for Lavalust routes
 RUN a2enmod rewrite
 
-# Change Apache Document Root to /public (for Laravel / Lavalust public folder)
-ENV APACHE_DOCUMENT_ROOT /var/www/html/public
+# Point Apache Document Root directly to project root
+ENV APACHE_DOCUMENT_ROOT /var/www/html
 RUN sed -ri -e 's!/var/www/!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/apache2.conf
 RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/sites-available/*.conf
 
-# Configure PHP production defaults
+# Apply production PHP configs
 RUN mv "$PHP_INI_DIR/php.ini-production" "$PHP_INI_DIR/php.ini"
 
-# Copy application files and vendor directory from build stage
 WORKDIR /var/www/html
-COPY --from=vendor /app /var/www/html
 
-# Copy entrypoint script
-COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+# Copy repository contents into the container
+COPY . /var/www/html/
 
-# Set correct permissions for Laravel runtime folders
-RUN chown -R www-data:www-data /var/www/html \
-    && chmod -R 775 /var/www/html/storage /var/www/html/bootstrap/cache 2>/dev/null || true
+# Set ownership permissions for Apache web server
+RUN chown -R www-data:www-data /var/www/html
 
-# Render assigns a dynamic PORT at runtime (defaults to 8080 if not set)
+# Expose port and bind Apache dynamically to Render's $PORT at launch
 EXPOSE 8080
-
-ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
-CMD ["apache2-foreground"]
+CMD ["sh", "-c", "sed -i \"s/Listen 80/Listen ${PORT:-8080}/g\" /etc/apache2/ports.conf && sed -i \"s/<VirtualHost \\*:80>/<VirtualHost \\*:${PORT:-8080}>/g\" /etc/apache2/sites-available/000-default.conf && apache2-foreground"]
